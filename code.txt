@@ -1,0 +1,618 @@
+; Global variables ;
+globals [
+  objects        ; objects contains all the elements that are in the market
+  current-offer  ; [object quantity cost winner]
+  marketValue    ; The current value of the offer right now
+  initial-market-value ; the marketValue when the offer was raised
+  deadline       ; Time until the offer expires
+  gold-value     ; current value of the gold
+  incense-value  ; current value of the incense
+  myrrh-value    ; current value of the myrrh
+  raw-taxes      ;
+  max-offer-duration ; max duration of the offer
+  num-agents     ; num of agents which participate in the simulation
+  the-winner     ;
+  money-average  ;
+
+  ; allien set up ;
+  allien-win-percent         ; how much the alliens wanna win
+  allien-panic-level         ; sell everything to stay alive
+]
+
+; Create breeds ;
+breed [hoomans hooman]
+breed [alliens allien]
+breed [cows cow]
+
+; Breed variables ;
+turtles-own [
+  money              ; current money of the turtle
+  bag                ; the objects in the bag are follow this structure [element quantity payed]
+  bid                ; current bid
+  max-bid            ; max amount it's up to pay
+  min-money          ; min money it must have
+  bag-capacity       ; capacity of the bag
+  panic-level
+  taxes-payed        ; how much taxes have payed this turtle
+  money-received
+  total-contribution
+  win-percent        ; how much it expects to win with an iteam
+  win-percent-gold
+  win-percent-incense
+  win-percent-myrrh
+  max-percent
+  threshold          ; used to cow-offer
+  risk               ; risk that the cows take
+  class              ; poor, rich or average
+]
+
+; Setup the environment ;
+to setup
+  clear-all
+  setup-variables
+  create-agents
+  setup-patches
+  reset-ticks
+end
+
+; initialize all the variables ;
+to setup-variables
+  set objects ["gold" "incense" "myrrh"]
+  set gold-value (random 200) + 300
+  set incense-value (random 200) + 100
+  set myrrh-value (random 200) + 50
+  set deadline -1
+  set max-offer-duration 10
+  set num-agents 10
+  set the-winner -1
+  set bank-initial-percent 65
+  set fading-collected-percent 0.21
+
+  ; ui ;
+  set raw-taxes 10
+  set taxes-increment 1.5 ; > 1
+  set tax-frequency 25
+  set initial-money 5000
+
+  set gold-volatility 4
+  set incense-volatility 10
+  set myrrh-volatility 20
+
+  ; set up the allien strategy ;
+  set allien-win-percent 1.05
+  set allien-panic-level (raw-taxes + 100) ; must be bigger than taxes
+
+end
+
+; beautiful, right? ;
+to setup-patches
+  ask patches [ set pcolor white ]
+end
+
+; Main loop ;
+to go
+
+  if deadline < 0 [ create-offer ]
+  ;update all stuff;
+  update-market
+  ; time to offersss ;
+  cow-offer
+  allien-offer
+  hooman-offer
+
+  ; update auction ;
+  update-auction
+
+  ; raise taxes each 500 ticks ;
+  if ticks mod 500 = 0 [
+    set raw-taxes (raw-taxes * taxes-increment)
+  ]
+
+  ; time to sell ;
+  time-to-sell
+
+ ; time to pay taxes ;
+  if ticks > 1 [
+    if ticks mod tax-frequency = 0 [
+      pay-taxes
+    ]
+  ]
+
+  ; get stats
+  set money-average 0
+  ask turtles [
+    set money-average (money-average + money)
+  ]
+  set money-average (money-average / count turtles )
+  update-class
+
+  tick
+
+  check-end
+end
+
+; step by step ;
+to next-step
+
+  if deadline < 0 [ create-offer ]
+  ;update all stuff;
+  update-market
+  ; time to offersss ;
+  cow-offer
+  allien-offer
+  hooman-offer
+
+  ; update auction ;
+  update-auction
+
+  ; raise taxes each 500 ticks ;
+  if ticks mod 500 = 0 [
+    set raw-taxes (raw-taxes * taxes-increment)
+  ]
+
+  ; time to sell ;
+  time-to-sell
+
+  ; time to pay taxes ;
+  if ticks > 1 [
+    if ticks mod tax-frequency = 0 [
+      pay-taxes
+    ]
+  ]
+
+  ; get stats
+  ask turtles [
+    set money-average (money-average + money)
+  ]
+  set money-average (money-average / count turtles )
+  update-class
+
+  tick
+  check-end
+
+end
+
+to check-end
+  ifelse (count alliens = 0)[
+    if (count hoomans = 0)[ set the-winner "cows" ]
+    if (count cows = 0)[ set the-winner "hoomans" ]
+  ][
+    if (count hoomans = 0)[
+      if (count cows = 0)[ set the-winner "alliens" ]
+    ]
+  ]
+
+  if ( the-winner != -1) [
+    user-message (word "John Davison Rockefeller would be proud of you, " the-winner ".")
+    stop
+  ]
+end
+
+to time-to-sell
+  ; cows just sell the object as soon as they get it ;
+  ask cows [
+    if (length bag) > 1 [
+      let current-object (item 0 bag)
+      ; get the value of that item in the market ;
+      let object-value ((item 1 current-object) * get-element-value (item 0 current-object))
+      ; update money ;
+      set money (money + object-value)
+      ; remove object from the bag ;
+      set bag remove-item 0 bag
+      ; update threshold
+      set threshold (random-float risk * money)
+    ]
+  ]
+
+  ; if the alliens gain the money that they want, they just sell
+  ask alliens [
+    if (length bag) > 1 [
+      let current-object (item 0 bag)
+      ; get the value of that item in the market ;
+      let object-value ((item 1 current-object) * get-element-value (item 0 current-object))
+      let payed (item 2 current-object)
+      if object-value > (payed * win-percent) [
+        ; update money ;
+        set money (money + object-value)
+        ; remove object from the bag ;
+        set bag remove-item 0 bag
+      ]
+    ]
+  ]
+
+  ; the behavoir of the hooman depends of the user ;
+  ask hoomans [
+    let i 0
+    let current-object 0
+    let object-value 0
+    while [i < ((length bag) - 1)]
+    [
+      set current-object (item i bag)
+      ; get the value of that item in the market and mult per quantity ;
+      set object-value ((item 1 current-object) * get-element-value (item 0 current-object))
+      let element (item 0 current-object)
+      let payed (item 2 current-object)
+      ; if I need the money ;
+      ifelse money < panic-level
+      [
+        set money (money + object-value)
+        set bag remove-item i bag
+      ]
+      ; If I dont need the money ;
+      [
+        ; if bag capacity is 0, sell the objects now
+        ifelse (bag-capacity = 0)
+        [
+          set money (money + object-value)
+          set bag remove-item i bag
+        ]
+      ; if bag capacity > 0 and money > panic-level, I can wait
+      [
+        ifelse element = "gold"
+          [ ; if it's gold ;
+            if object-value > (payed * win-percent-gold)
+            [
+              set money (money + object-value)
+              set bag remove-item i bag
+            ]
+          ]
+        [
+         ifelse element = "incense"
+          [ ; if it's incense ;
+            if object-value > (payed * win-percent-incense)
+            [
+              set money (money + object-value)
+              set bag remove-item i bag
+            ]
+          ]
+          [ ; it's myrrh ;
+            if object-value > (payed * win-percent-myrrh)
+            [
+              set money (money + object-value)
+              set bag remove-item i bag
+            ]
+          ]
+        ]
+       ] ; end bag capacity 0 ;
+      ]; end panic level if  ;
+      ; check the next item of the bag ;
+      set i (i + 1)
+    ] ; end while ;
+  ]
+end
+
+to pay-taxes
+  ; it the mode distribute-system is avaible, the money collected by the taxes will be
+  ; re-distributed. Everyones pays X taxes, and then the system calculates the average of the money
+  ; among the turtles, the turtles that are below the average, will receive money.
+  let to-pay 0
+  ifelse distribute-system
+  [
+    let collected 0
+    let average 0
+    ask turtles [
+      ifelse (taxes-percent = true)
+      [
+        set to-pay (money * (percent-of-taxes / 100) + raw-taxes)
+        set money (money - to-pay)
+      ]
+      ; ELSE
+      [
+        set to-pay raw-taxes
+        set money (money - to-pay)
+      ]
+        set collected (collected + to-pay)
+        set taxes-payed (taxes-payed + to-pay)
+        set average (average + money)
+    ]
+   set collected (collected - (collected * fading-collected-percent))
+   ; Normalize average
+   set collected (collected / (count turtles) )
+   ask turtles [
+     set money-received (money-received + collected)
+     set total-contribution (taxes-payed - money-received)
+     set money (money + collected)
+   ]
+
+  ]
+  ; ELSE
+  [
+    ; if there is not distribute system the turtles just pay the taxes
+    ask turtles [
+      ifelse (taxes-percent = true)
+      [
+        set to-pay (money * (percent-of-taxes / 100) + raw-taxes)
+        set money (money - to-pay)
+      ]
+      ; ELSE
+      [
+        set to-pay raw-taxes
+        set money (money - to-pay)
+      ]
+      ; update variables
+      set taxes-payed (taxes-payed + to-pay)
+      set money-received (money-received + 0)
+      set total-contribution (taxes-payed - money-received)
+    ]
+  ]
+  ask turtles[
+    ; if you can not pay, you must die
+      if money < 0 [die]
+  ]
+end
+
+; If the marketValue is bigger than the cost of the offer,
+; the cows will raise the bid a 5% of the current cost. Muuuu!
+to cow-offer
+  ; am i the winner ?
+  let winner (item 3 current-offer)
+  ; If the cost is smaller than the marketValue, im gonna make money with this bb
+  ask cows [
+    if winner != who
+    [
+      let cost (item 2 current-offer)
+      if cost < (marketValue + threshold)
+      [
+        if (money - (cost + (cost * 0.02))) > min-money
+        [
+          set bid (cost + (cost * 0.02))
+          ; update current-offer
+          set current-offer replace-item 2 current-offer bid
+          set current-offer replace-item 3 current-offer who
+        ]
+      ]
+  ]
+  ask cows [set max-bid bid ]
+  ]
+end
+
+; The alliens pay until they get an object, then they wait to their benefit comes magicaly
+to allien-offer
+
+   ; am i the winner ?
+  let winner (item 3 current-offer)
+  ; If the cost is smaller than my money, SHUT UP AND TAKE MY MONEY
+  ask alliens [
+    if winner != who
+    [
+      let cost (item 2 current-offer)
+      if (cost * 1.01) < money
+      [
+        if length(bag) = 1 [
+          set bid cost * 1.01
+          ; update current-offer
+          set current-offer replace-item 2 current-offer bid
+          set current-offer replace-item 3 current-offer who
+        ]
+      ]
+    ]
+  ]
+end
+
+; hooman strategy
+;
+to hooman-offer
+  ; update max-bid ;
+  let hooman-max-bid 0
+  let cost (item 2 current-offer)
+  ; Calculate the max offert Im up to make ;
+  ask hoomans [
+    if (max-bid = -1) [
+      set max-bid (cost * (max-percent))
+    ]
+    set hooman-max-bid max-bid
+  ]
+
+  let winner (item 3 current-offer)
+
+  ; if the bag-capacity is 0, I need win instant money ;
+  ask hoomans [
+    ; If im not the winner, calculate next bid ;
+    if winner != who
+    [
+      ifelse (bag-capacity = 0)
+      [
+        ; I need instant money. (cows strategy)  ;
+        if (cost < marketValue)
+        [
+          if money - (cost + (cost * 0.03)) > min-money
+          [ set bid (cost + (cost * 0.03)) ]
+        ]
+      ]
+      ; If I can keep the item, i dont care of the current market Value ;
+      [
+        if (bag-capacity > (length bag) - 1)[
+          ; am i up to pay that amount? ;
+          if (cost < hooman-max-bid)
+          [
+            ; do i have enough money to pay my bid? ;
+            if (money - (cost + (cost * 0.01))) > min-money
+            [
+              set bid (cost + (cost * 0.01))
+              ; update current-offer
+              set current-offer replace-item 2 current-offer bid
+              set current-offer replace-item 3 current-offer who
+            ]
+          ]; end if ;
+        ]
+      ];end else bag-capacity ;
+    ]
+  ]
+end
+
+
+; Create agents ;
+to create-agents
+
+  create-alliens num-agents
+  ask alliens [
+    set shape "face happy"
+    set color green
+    setxy -10 0
+    set bag-capacity 0
+    set min-money 100
+    ; Global variable ;
+    set win-percent (random-float 1) + 1
+    set panic-level allien-panic-level
+  ]
+  create-hoomans num-agents
+  ask hoomans [
+    set shape "person"
+    set color black
+    setxy 0 0
+    set bag-capacity hooman-bag-capacity
+    set min-money hooman-min-money
+    ;; Cambiar el rango en el que se mueven los intervalos aleatorios
+    ;; para que se ajusten a la input del usuario
+    set panic-level (hooman-panic-level * (my-random-float(0.5) + 1))
+    set win-percent-gold (hooman-win-percent-gold + my-random-float(0.2))
+    set win-percent-incense (hooman-win-percent-incense + my-random-float(0.3))
+    set win-percent-myrrh (hooman-win-percent-myrrh + my-random-float(0.4))
+    set max-percent (hooman-max-percent + my-random-float(0.3))
+  ]
+  create-cows num-agents
+  ask cows [
+    set shape "cow"
+    set color brown
+    setxy 10 0
+    set bag-capacity 0
+    set min-money 1
+    set risk random-float 0.10
+    set threshold (random-float risk * initial-money)
+  ]
+
+  ; To all of them
+  ask turtles [
+    ; Random interval
+    let plus random-float 0.5
+    let minus random-float -0.5
+    let total (plus + minus)
+    set money (initial-money + (total * initial-money))
+    set size 10 ; para que el tamanyo no se dispare
+    ; initialize list ;
+    set bag (list "$")
+    ; initialize max-bid ;
+    set max-bid -1
+    ; initialize contributions ;
+    set taxes-payed 0
+    set money-received 0
+    set total-contribution 0
+    set money-average (money-average + money)
+  ]
+  set money-average money-average / (count turtles)
+
+  update-class
+end
+
+to update-class
+  let Hbound (money-average * 1.25)
+  let Lbound (money-average * 0.75)
+  ask turtles [
+    ifelse(money > Hbound)[ set class "rich" ]
+    [;ELSE
+      ifelse(money < Lbound) [ set class "poor" ] [set class "average"]
+    ]
+  ]
+end
+
+; Create new offer
+to create-offer
+  ; pick random object
+  let object one-of objects
+  ; quantity of the object
+  let quantity (random 50) + 1
+  ; time to complete the negotation
+  set deadline (random max-offer-duration) + 1
+  ; calculate initial cost
+  let ini_cost 0
+  ifelse object = "gold"
+    ; gold
+    [ set ini_cost (gold-value * quantity) ]
+  [ifelse object = "incense"
+    ; incense
+    [ set ini_cost (incense-value * quantity) ]
+    ; myrrh
+    [set ini_cost (myrrh-value * quantity) ]
+  ]
+  ; update the current offer ;
+  set ini_cost (ini_cost * (bank-initial-percent / 100))
+  set current-offer (list object quantity ini_cost "none")
+  set initial-market-value ini_cost
+  set marketValue ini_cost
+end
+
+; Update value of the market ;
+to update-market
+  ; update gold ;
+  let variation get-variation gold-volatility
+  set gold-value (gold-value + variation)
+  if gold-value < 0 [ set gold-value 0]
+
+  ; update incense ;
+  set variation get-variation incense-volatility
+  set incense-value (incense-value + variation)
+  if incense-value < 0 [ set incense-value 0 ]
+
+  ; update myrrh ;
+  set variation get-variation myrrh-volatility
+  set myrrh-value (myrrh-value + variation)
+  if myrrh-value < 0 [ set myrrh-value 0 ]
+
+  ; update marketValue ;
+  let object (item 0 current-offer)
+  let quantity (item 1 current-offer)
+  ifelse object = "gold"
+    [ set marketValue (gold-value * quantity) ]
+  [ifelse object = "incense"
+    [ set marketValue (incense-value * quantity) ]
+    [ set marketValue (myrrh-value * quantity) ]
+  ]
+end
+
+; Updates all the elements related with the auction house ;
+to update-auction
+  ; update best offer ;
+  let best-offer (item 2 current-offer)
+  ; update deadline ;
+  set deadline (deadline - 1)
+  ; check if finish ;
+  if deadline < 1 [
+    ; give the object to the winner ;
+    ask turtles[
+      if who = (item 3 current-offer)
+      [
+        set money (money - (item 2 current-offer))
+        let object (list (item 0 current-offer) (item 1 current-offer) (bid))
+        set bag fput object bag
+      ]
+      ; reset max-bid ;
+      set max-bid -1
+      ; reset bid ;
+      set bid -1
+    ]
+  ]
+end
+
+; It returns a value inside of (-rang, rang)
+to-report get-variation [rang]
+  let plus (random rang)
+  let minus (random rang) * -1
+  report (plus + minus)
+end
+
+; It returns the current value of one element ;
+to-report get-element-value [name]
+  ifelse name = "gold"
+  [report gold-value]
+  [ifelse name = "incense"
+    [report incense-value]
+    [report myrrh-value]
+  ]
+end
+
+to-report my-random-float [a]
+  let plus (random-float a)
+  let minus (random-float a) * -1
+  report (plus + minus)
+end
+
